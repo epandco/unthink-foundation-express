@@ -7,7 +7,7 @@ import {
   RouteMethod,
   UnthinkGeneratorBackend,
   ViewResult,
-  DataResult, UnthinkViewRenderer
+  DataResult, UnthinkViewRenderer, Cookie
 } from '@epandco/unthink-foundation/lib/core';
 
 import {
@@ -18,7 +18,7 @@ import {
   Response,
   NextFunction,
   json,
-  ErrorRequestHandler
+  ErrorRequestHandler, CookieOptions
 } from 'express';
 
 interface GeneratedRoute {
@@ -31,6 +31,105 @@ interface GeneratedDefinition {
   router: Router;
 }
 
+function setHeaders(resp: Response, headers?: Record<string, string>): void {
+  if (!headers) {
+    return;
+  }
+
+  for (const name in headers) {
+    if (name.toLowerCase() === 'content-type') {
+      console.log('skipping content-type - this cant be set directly');
+      continue;
+    }
+
+    const currentValue = resp.getHeader(name);
+    const newValue = headers[name];
+    if (currentValue) {
+      console.log(`Replacing header value for ${name}. Old: ${currentValue} - New: ${newValue}`);
+    }
+    
+    resp.set(name, newValue);
+  }
+}
+
+function setCookie(resp: Response, cookie: Cookie): void {
+  resp.cookie(cookie.name, cookie.value, {
+    domain: cookie.domain,
+    expires: cookie.expires,
+    httpOnly: cookie.httpOnly,
+    maxAge: cookie.maxAge,
+    path: cookie.path,
+    sameSite: cookie.sameSite,
+    secure: cookie.secure
+  });
+}
+
+function setCookies(req: Request, resp: Response, cookies?: Cookie[]): void {
+  if (!cookies) {
+    return;
+  }
+
+  /* If cookies are set then lets not replace existing cookies unless specified by the new cookie config */
+  if (req.cookies) {
+    for (const cookie of cookies) {
+      const currentCookie = req.cookies[cookie.name];
+
+      if (currentCookie && !cookie.overwrite) {
+        console.log(`Keep existing cookie: ${cookie.name} based on config option to overwrite this cookie.`);
+        continue;
+      }
+
+      if (currentCookie && cookie.overwrite) {
+        console.log(`Overwriting cookie: ${cookie.name} based on config option to overwrite this cookie.`);
+      }
+
+      setCookie(resp, cookie);
+    }
+  } else {
+    /* probably not huge gains but lets not worry about the checks for existing cookies if not exist on the request */
+    for (const cookie of cookies) {
+      setCookie(resp, cookie);
+    }
+  }
+}
+
+function convertHeaders(req: Request): Record<string, string> | undefined {
+  if (!req.headers) {
+    return undefined;
+  }
+
+  const headers: Record<string, string> = {};
+  for (const name in req.headers) {
+    const value = req.headers[name];
+
+    if (value) {
+      // Choosing to ignore the string[] part of this type definition.
+      // Not clear why that is needed but can address it when it comes up.
+      headers[name] = value as string;
+    }
+  }
+
+  return headers;
+}
+
+function convertCookies(req: Request): Cookie[] | undefined {
+  if (!req.cookies) {
+    return undefined;
+  }
+
+  const cookies: Cookie[] = [];
+  for (const name in req.cookies) {
+    const value = req.cookies[name];
+
+    cookies.push({
+      name: name,
+      value: value
+    });
+  }
+
+  return cookies;
+}
+
 function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewResult>, render: UnthinkViewRenderer): RequestHandler {
   return async (req, resp, next): Promise<void> => {
     resp.contentType('text/html');
@@ -40,7 +139,8 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
       const ctx: RouteContext = {
         query: req.query,
         params: req.params,
-        body: req.body
+        headers: convertHeaders(req),
+        cookies: convertCookies(req)
       };
 
       const result = await resourceRouteHandler(ctx);
@@ -50,6 +150,9 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
           result.template as string,
           result.value
         );
+
+        setHeaders(resp, result.headers);
+        setCookies(req, resp, result.cookies);
         resp.status(200);
         resp.send(body);
 
@@ -57,6 +160,8 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
       }
 
       if ((result.status === 301 || result.status === 302) && result.redirectUrl) {
+        setHeaders(resp, result.headers);
+        setCookies(req, resp, result.cookies);
         resp.redirect(result.status as number, result.redirectUrl as string);
         return;
       }
@@ -77,7 +182,7 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
 }
 
 function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler {
-  return async (err: unknown, _req: Request, resp: Response, _next: NextFunction ): Promise<void> => {
+  return async (err: unknown, req: Request, resp: Response, _next: NextFunction ): Promise<void> => {
     if (resp.headersSent) {
       console.log('Response already sent. This is likely a bug in the route pipeline in this package.');
       return;
@@ -93,6 +198,7 @@ function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler
     if (!(err instanceof ViewResult)) {
       console.log('Unexpected error:', err);
       resp.status(500).send(unknownErrorMessage);
+      return;
     }
 
     const result = err as ViewResult;
@@ -102,11 +208,18 @@ function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler
       return;
     }
 
-    const view = render(result.template as string, result.value);
+    try {
+      const view = render(result.template as string, result.value);
 
-    resp.status(result.status);
-    resp.send(view);
-    return;
+      setHeaders(resp, result.headers);
+      setCookies(req, resp, result.cookies);
+      resp.status(result.status);
+      resp.send(view);
+      return;
+    } catch (err) {
+      console.log('Failed to handle result', err);
+      resp.status(500).send(unknownErrorMessage);
+    }
   };
 }
 
@@ -117,17 +230,23 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
       const ctx: RouteContext = {
         query: req.query,
         params: req.params,
-        body: req.body
+        body: req.body,
+        headers: convertHeaders(req),
+        cookies: convertCookies(req)
       };
 
       const result = await resourceRouteHandler(ctx);
 
       if (result.status === 200 && result.value) {
+        setHeaders(resp, result.headers);
+        setCookies(req, resp, result.cookies);
         resp.status(result.status).json(result.value);
         return;
       }
 
       if (result.status === 204 && !result.value) {
+        setHeaders(resp, result.headers);
+        setCookies(req, resp, result.cookies);
         resp.status(204).end();
         return;
       }
@@ -147,7 +266,7 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
   };
 }
 
-async function dataErrorHandler(err: unknown, _req: Request, resp: Response, _next: NextFunction ): Promise<void> {
+async function dataErrorHandler(err: unknown, req: Request, resp: Response, _next: NextFunction ): Promise<void> {
   if (resp.headersSent) {
     console.log('Response already sent. This is likely a bug in the route pipeline in this package.');
     return;
@@ -163,12 +282,14 @@ async function dataErrorHandler(err: unknown, _req: Request, resp: Response, _ne
   if (!(err instanceof DataResult)) {
     console.log('Unexpected error:', err);
     resp.status(500).json(unknownError);
+    return;
   }
 
   const result = err as DataResult;
   if (result.status !== 400 && result.status !== 401 && result.status !== 404) {
     console.log(`The status ${result.status} is not supported by this framework for data results.`);
     resp.status(500).json(unknownError);
+    return;
   }
 
   if ((result.status === 401 || result.status === 404) && result.value) {
@@ -183,7 +304,8 @@ async function dataErrorHandler(err: unknown, _req: Request, resp: Response, _ne
     return;
   }
 
-  // TODO: Handle headers and cookies
+  setHeaders(resp, result.headers);
+  setCookies(req, resp, result.cookies);
   resp.status(result.status).json(result.value);
 }
 
