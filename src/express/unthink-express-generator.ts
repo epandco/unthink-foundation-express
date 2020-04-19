@@ -53,15 +53,48 @@ function setHeaders(resp: Response, headers?: Record<string, string>): void {
 }
 
 function setCookie(resp: Response, cookie: Cookie): void {
-  resp.cookie(cookie.name, cookie.value, {
-    domain: cookie.domain,
-    expires: cookie.expires,
-    httpOnly: cookie.httpOnly,
-    maxAge: cookie.maxAge,
-    path: cookie.path,
-    sameSite: cookie.sameSite,
-    secure: cookie.secure
-  });
+  const options: CookieOptions = {};
+
+  /*
+   * Noticed the 'cookie' function below did not like having a full object of undefined properties.
+   * The type suggests this is fine but 'maxAge' specifically seems to trip up with the function assuming
+   * that if the property exists, even if undefined (per the type) then it should be a number.
+   *
+   * This feels like a slight rough spot between where types are generated for express but it's obviously not
+   * typescript under and they way they check for 'undefined' seems to be if property doesn't exist.
+   *
+   * The code below creates an empty object and only adds the property to it if the value exist for that property
+   * to avoid the problem above.
+   */
+  if (cookie.domain) {
+    options.domain = cookie.domain;
+  }
+
+  if (cookie.expires) {
+    options.expires = cookie.expires;
+  }
+
+  if (cookie.httpOnly) {
+    options.httpOnly = cookie.httpOnly;
+  }
+
+  if (cookie.maxAge) {
+    options.maxAge = cookie.maxAge;
+  }
+
+  if (cookie.path) {
+    options.path = cookie.path;
+  }
+
+  if (cookie.sameSite) {
+    options.sameSite = cookie.sameSite;
+  }
+
+  if (cookie.secure) {
+    options.secure = cookie.secure;
+  }
+
+  resp.cookie(cookie.name, cookie.value, options);
 }
 
 function setCookies(req: Request, resp: Response, cookies?: Cookie[]): void {
