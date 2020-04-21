@@ -1,4 +1,6 @@
 import * as path from 'path';
+import * as pino from 'express-pino-logger';
+
 import {
   ResourceDefinition,
   ResourceRouteDefinition,
@@ -9,7 +11,6 @@ import {
   ViewResult,
   DataResult, UnthinkViewRenderer, Cookie
 } from '@epandco/unthink-foundation/lib/core';
-
 import {
   Application,
   Router,
@@ -345,16 +346,22 @@ async function dataErrorHandler(err: unknown, req: Request, resp: Response, _nex
 export class UnthinkExpressGenerator implements UnthinkGeneratorBackend<RequestHandler> {
   private readonly app: Application;
   private readonly viewRenderer: UnthinkViewRenderer;
+  private readonly logLevel: string;
 
-  constructor(app: Application, viewRenderer: UnthinkViewRenderer) {
+  constructor(app: Application, viewRenderer: UnthinkViewRenderer, logLevel: string) {
     this.app = app;
     this.viewRenderer = viewRenderer;
+    this.logLevel = logLevel;
   }
 
   generate(resourceDefinitions: ResourceDefinition<RequestHandler>[]): void {
     const generatedDefinitions = resourceDefinitions.flatMap(p => this.generateDefinition(p));
 
     this.app.use(json());
+    this.app.use(pino({
+      level: this.logLevel
+    }));
+
     for (const { path, router } of generatedDefinitions) {
       this.app.use(path, router);
     }
