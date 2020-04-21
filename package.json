@@ -1,6 +1,6 @@
 {
   "name": "@epandco/unthink-foundation-express",
-  "version": "1.0.0-beta.6",
+  "version": "1.0.0-beta.7",
   "description": "Express generator for the unthink-foundation framework",
   "scripts": {
     "prepublishOnly": "npm run build",
@@ -27,7 +27,7 @@
   "license": "MIT",
   "homepage": "https://github.com/epandco/unthink-foundation-express#readme",
   "devDependencies": {
-    "@epandco/unthink-foundation": "^1.0.0-beta.4",
+    "@epandco/unthink-foundation": "^1.0.0-beta.5",
     "@types/eslint": "^6.8.0",
     "@types/express": "^4.17.6",
     "@types/express-pino-logger": "^4.0.2",
@@ -37,7 +37,7 @@
     "typescript": "^3.8.3"
   },
   "peerDependencies": {
-    "@epandco/unthink-foundation": "^1.0.0-beta.4",
+    "@epandco/unthink-foundation": "^1.0.0-beta.5",
     "express": "^4.17.1"
   },
   "dependencies": {
