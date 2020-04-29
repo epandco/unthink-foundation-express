@@ -164,8 +164,12 @@ function convertCookies(req: Request): Cookie[] | undefined {
   return cookies;
 }
 
-function buildUnthinkError(error: unknown): { unthinkError: unknown} {
-  return { unthinkError: error };
+function buildUnthinkError(error: unknown): { unthinkHandlerError: unknown} {
+  if (error instanceof Error) {
+    return { unthinkHandlerError: error.stack };
+  }
+
+  return { unthinkHandlerError: JSON.stringify(error) };
 }
 
 function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewResult>, render: UnthinkViewRenderer): RequestHandler {
