@@ -32,21 +32,21 @@ interface GeneratedDefinition {
   router: Router;
 }
 
-function setHeaders(resp: Response, headers?: Record<string, string>): void {
+function setHeaders(req: Request, resp: Response, headers?: Record<string, string>): void {
   if (!headers) {
     return;
   }
 
   for (const name in headers) {
     if (name.toLowerCase() === 'content-type') {
-      console.log('skipping content-type - this cant be set directly');
+      req.log.error('skipping content-type - this cant be set directly');
       continue;
     }
 
     const currentValue = resp.getHeader(name);
     const newValue = headers[name];
     if (currentValue) {
-      console.log(`Replacing header value for ${name}. Old: ${currentValue} - New: ${newValue}`);
+      req.log.error(`Replacing header value for ${name}. Old: ${currentValue} - New: ${newValue}`);
     }
     
     resp.set(name, newValue);
@@ -109,12 +109,12 @@ function setCookies(req: Request, resp: Response, cookies?: Cookie[]): void {
       const currentCookie = req.cookies[cookie.name];
 
       if (currentCookie && !cookie.overwrite) {
-        console.log(`Keep existing cookie: ${cookie.name} based on config option to overwrite this cookie.`);
+        req.log.error(`Keep existing cookie: ${cookie.name} based on config option to overwrite this cookie.`);
         continue;
       }
 
       if (currentCookie && cookie.overwrite) {
-        console.log(`Overwriting cookie: ${cookie.name} based on config option to overwrite this cookie.`);
+        req.log.error(`Overwriting cookie: ${cookie.name} based on config option to overwrite this cookie.`);
       }
 
       setCookie(resp, cookie);
@@ -162,6 +162,10 @@ function convertCookies(req: Request): Cookie[] | undefined {
   }
 
   return cookies;
+}
+
+function buildUnthinkError(error: unknown): { unthinkError: unknown} {
+  return { unthinkError: error };
 }
 
 function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewResult>, render: UnthinkViewRenderer): RequestHandler {
@@ -220,26 +224,26 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
 function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler {
   return async (err: unknown, req: Request, resp: Response, _next: NextFunction ): Promise<void> => {
     if (resp.headersSent) {
-      console.log('Response already sent. This is likely a bug in the route pipeline in this package.');
+      req.log.error('Response already sent. This is likely a bug in the route pipeline in this package.');
       return;
     }
 
     const unknownErrorMessage = 'Unknown error.';
     if (!err) {
-      console.log('No error passed into handler');
+      req.log.error('No error passed into handler');
       resp.status(500).send(unknownErrorMessage);
       return;
     }
 
     if (!(err instanceof ViewResult)) {
-      console.log('Unexpected error:', err);
+      req.log.error(buildUnthinkError(err), 'Unexpected error:');
       resp.status(500).send(unknownErrorMessage);
       return;
     }
 
     const result = err as ViewResult;
     if (!result.template) {
-      console.log('Template not defined.');
+      req.log.error('Template not defined.');
       resp.status(500).send(unknownErrorMessage);
       return;
     }
@@ -253,7 +257,7 @@ function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler
       resp.send(view);
       return;
     } catch (err) {
-      console.log('Failed to handle result', err);
+      req.log.error(buildUnthinkError(err), 'Failed to handle result');
       resp.status(500).send(unknownErrorMessage);
     }
   };
@@ -306,38 +310,38 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
 
 async function dataErrorHandler(err: unknown, req: Request, resp: Response, _next: NextFunction ): Promise<void> {
   if (resp.headersSent) {
-    console.log('Response already sent. This is likely a bug in the route pipeline in this package.');
+    req.log.error('Response already sent. This is likely a bug in the route pipeline in this package.');
     return;
   }
 
   const unknownError = 'Unknown error.';
   if (!err) {
-    console.log('No error passed into handler');
+    req.log.error('No error passed into dataErrorHandler');
     resp.status(500).json(unknownError);
     return;
   }
 
   if (!(err instanceof DataResult)) {
-    console.log('Unexpected error:', err);
+    req.log.error(buildUnthinkError(err), 'Unexpected error');
     resp.status(500).json(unknownError);
     return;
   }
 
   const result = err as DataResult;
   if (result.status !== 400 && result.status !== 401 && result.status !== 404) {
-    console.log(`The status ${result.status} is not supported by this framework for data results.`);
+    req.log.error(`The status ${result.status} is not supported by this framework for data results.`);
     resp.status(500).json(unknownError);
     return;
   }
 
   if ((result.status === 401 || result.status === 404) && result.value) {
-    console.log(`When the data result has a status of ${result.status} the value SHOULD NOT be set.`);
+    req.log.error(`When the data result has a status of ${result.status} the value SHOULD NOT be set.`);
     resp.status(500).json('unknown error');
     return;
   }
 
   if (result.status === 400 && !result.value) {
-    console.log('When the data result has a status of 400 the value should MUST be set.');
+    req.log.error('When the data result has a status of 400 the value should MUST be set.');
     resp.status(500).json('unknown error');
     return;
   }
