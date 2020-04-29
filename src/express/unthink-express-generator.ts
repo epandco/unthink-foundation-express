@@ -191,7 +191,7 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
           result.value
         );
 
-        setHeaders(resp, result.headers);
+        setHeaders(req, resp, result.headers);
         setCookies(req, resp, result.cookies);
         resp.status(200);
         resp.send(body);
@@ -200,7 +200,7 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
       }
 
       if ((result.status === 301 || result.status === 302) && result.redirectUrl) {
-        setHeaders(resp, result.headers);
+        setHeaders(req, resp, result.headers);
         setCookies(req, resp, result.cookies);
         resp.redirect(result.status as number, result.redirectUrl as string);
         return;
@@ -251,7 +251,7 @@ function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler
     try {
       const view = render(result.template as string, result.value);
 
-      setHeaders(resp, result.headers);
+      setHeaders(req, resp, result.headers);
       setCookies(req, resp, result.cookies);
       resp.status(result.status);
       resp.send(view);
@@ -280,14 +280,14 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
       const result = await resourceRouteHandler(ctx);
 
       if (result.status === 200 && result.value) {
-        setHeaders(resp, result.headers);
+        setHeaders(req, resp, result.headers);
         setCookies(req, resp, result.cookies);
         resp.status(result.status).json(result.value);
         return;
       }
 
       if (result.status === 204 && !result.value) {
-        setHeaders(resp, result.headers);
+        setHeaders(req, resp, result.headers);
         setCookies(req, resp, result.cookies);
         resp.status(204).end();
         return;
@@ -346,7 +346,7 @@ async function dataErrorHandler(err: unknown, req: Request, resp: Response, _nex
     return;
   }
 
-  setHeaders(resp, result.headers);
+  setHeaders(req, resp, result.headers);
   setCookies(req, resp, result.cookies);
   resp.status(result.status).json(result.value);
 }
