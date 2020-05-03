@@ -1,4 +1,4 @@
-import * as path from 'path';
+import { resolve } from 'url';
 import * as pino from 'express-pino-logger';
 
 import {
@@ -452,7 +452,7 @@ export class UnthinkExpressGenerator implements UnthinkGeneratorBackend<RequestH
           basePath = '/';
         }
 
-        const urlPath = path.join(prefix, basePath);
+        const urlPath = resolve(prefix, basePath);
         const generatedDefinition: GeneratedDefinition = {
           path: urlPath,
           router: Router()
