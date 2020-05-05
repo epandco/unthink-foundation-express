@@ -42,7 +42,6 @@
     "express": "^4.17.1"
   },
   "dependencies": {
-    "@types/url-join": "^4.0.0",
     "express-pino-logger": "^4.0.0"
   }
 }
