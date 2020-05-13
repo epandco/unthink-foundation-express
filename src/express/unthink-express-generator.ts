@@ -184,7 +184,8 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
         headers: convertHeaders(req),
         cookies: convertCookies(req),
         logger: req.log,
-        local: resp.locals
+        local: resp.locals,
+        path: req.path
       };
 
       const result = await resourceRouteHandler(ctx);
@@ -278,7 +279,8 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
         headers: convertHeaders(req),
         cookies: convertCookies(req),
         logger: req.log,
-        local: resp.locals
+        local: resp.locals,
+        path: req.path
       };
 
       const result = await resourceRouteHandler(ctx);
