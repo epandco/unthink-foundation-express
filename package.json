@@ -38,7 +38,7 @@
     "typescript": "^3.8.3"
   },
   "peerDependencies": {
-    "@epandco/unthink-foundation": "^1.0.0",
+    "@epandco/unthink-foundation": "^1.0.1",
     "express": "^4.17.1"
   },
   "dependencies": {
