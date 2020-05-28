@@ -9,12 +9,14 @@ import {
   ResourceDefinition,
   ResourceRouteDefinition,
   ResourceRouteHandlerBase,
+  Result,
   RouteContext,
   RouteMethod,
   RouteType,
   UnthinkGeneratorBackend,
   UnthinkMiddleware,
-  UnthinkMiddlewareHandler, UnthinkRawMiddleware,
+  UnthinkMiddlewareHandler,
+  UnthinkRawMiddleware,
   UnthinkViewRenderer,
   ViewResult
 } from '@epandco/unthink-foundation/lib/core';
@@ -182,11 +184,11 @@ function convertCookies(req: Request): Cookie[] | undefined {
   return cookies;
 }
 
-function buildRouteContext(req: Request, resp: Response, includeBody: boolean): RouteContext {
+function buildRouteContext(req: Request, resp: Response): RouteContext {
   return {
     query: req.query,
     params: req.params,
-    body: includeBody ? req.body : undefined,
+    body: req.body,
     headers: convertHeaders(req),
     cookies: convertCookies(req),
     logger: req.log,
@@ -203,28 +205,35 @@ function buildUnthinkError(error: unknown): { unthinkHandlerError: unknown} {
   return { unthinkHandlerError: JSON.stringify(error) };
 }
 
+function redirect(result: Result, req: Request, resp: Response): boolean {
+  if ((result.status === 301 || result.status === 302) && result.redirectUrl) {
+    setHeaders(req, resp, result.headers);
+    setCookies(req, resp, result.cookies);
+    resp.redirect(result.status as number, result.redirectUrl as string);
+    return true;
+  }
+
+  if ((result.status === 301 || result.status === 302) && !result.redirectUrl) {
+    throw new Error(`When view result has a status of ${result.status} the redirect url MUST BE specified`);
+  }
+
+  return false;
+}
+
 function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewResult>, render: UnthinkViewRenderer): RequestHandler {
   return async (req, resp, next): Promise<void> => {
     resp.contentType('text/html');
 
     let error: unknown;
     try {
-      const ctx: RouteContext = {
-        query: req.query,
-        params: req.params,
-        headers: convertHeaders(req),
-        cookies: convertCookies(req),
-        logger: req.log,
-        local: resp.locals,
-        path: req.path
-      };
+      const ctx = buildRouteContext(req, resp);
 
       const result = await resourceRouteHandler(ctx);
 
       if (result.status === 200 && result.template) {
         const body = render(
-          result.template as string,
-          result.value
+          result,
+          ctx
         );
 
         setHeaders(req, resp, result.headers);
@@ -235,16 +244,11 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
         return;
       }
 
-      if ((result.status === 301 || result.status === 302) && result.redirectUrl) {
-        setHeaders(req, resp, result.headers);
-        setCookies(req, resp, result.cookies);
-        resp.redirect(result.status as number, result.redirectUrl as string);
+      if (redirect(result, req, resp)) {
         return;
       }
 
-      if ((result.status === 301 || result.status === 302) && !result.redirectUrl) {
-        error = new Error(`When view result has a status of ${result.status} the redirect url MUST BE specified`);
-      } if (result.status === 200 && !result.template) {
+      if (result.status === 200 && !result.template) {
         error = new Error('When view result has a status of 200 the template MUST BE set!');
       } else {
         error = result;
@@ -285,7 +289,7 @@ function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler
     }
 
     try {
-      const view = render(result.template as string, result.value);
+      const view = render(result, buildRouteContext(req, resp));
 
       setHeaders(req, resp, result.headers);
       setCookies(req, resp, result.cookies);
@@ -303,16 +307,7 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
   return async (req, resp, next): Promise<void> => {
     let error: unknown;
     try {
-      const ctx: RouteContext = {
-        query: req.query,
-        params: req.params,
-        body: req.body,
-        headers: convertHeaders(req),
-        cookies: convertCookies(req),
-        logger: req.log,
-        local: resp.locals,
-        path: req.path
-      };
+      const ctx: RouteContext = buildRouteContext(req, resp);
 
       const result = await resourceRouteHandler(ctx);
 
@@ -327,6 +322,10 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
         setHeaders(req, resp, result.headers);
         setCookies(req, resp, result.cookies);
         resp.status(204).end();
+        return;
+      }
+
+      if (redirect(result, req, resp)) {
         return;
       }
 
@@ -358,13 +357,13 @@ async function dataErrorHandler(err: unknown, req: Request, resp: Response, _nex
     return;
   }
 
-  if (!(err instanceof DataResult)) {
+  if (!(err instanceof DataResult) && !(err instanceof MiddlewareResult)) {
     req.log.error(buildUnthinkError(err), 'Unexpected error');
     resp.status(500).json(unknownError);
     return;
   }
 
-  const result = err as DataResult;
+  const result = err as Result;
   if (result.status !== 400 && result.status !== 401 && result.status !== 404) {
     req.log.error(`The status ${result.status} is not supported by this framework for data results.`);
     resp.status(500).json(unknownError);
@@ -443,7 +442,7 @@ function buildMiddlewareHandler(
   handler: UnthinkMiddlewareHandler,
   endHandler: MiddlewareEndHandler): RequestHandler {
   return (req, res, next): void | Promise<void> => {
-    const ctx = buildRouteContext(req, res, true);
+    const ctx = buildRouteContext(req, res);
 
     try {
       const result = handler(ctx);
@@ -483,7 +482,19 @@ function processMiddleware(routeType: RouteType, middleware?: UnthinkMiddleware[
     return undefined;
   }
 
-  return middleware.map((handler) => {
+  let filtered: UnthinkMiddleware[];
+
+  // Only include the relevant middleware for the route type
+  // It is not an error for it to be in the list especially from the resource level we just safely ignore it
+  if (routeType === RouteType.DATA) {
+    filtered = middleware.filter(p => p.__middlewareType !== MiddlewareType.VIEW);
+  } else if (routeType === RouteType.VIEW) {
+    filtered = middleware.filter(p => p.__middlewareType !== MiddlewareType.DATA);
+  } else {
+    throw new Error(`Route type ${routeType} is not supported`);
+  }
+
+  return filtered.map((handler) => {
     if (handler.__middlewareType !== MiddlewareType.RAW) {
       return wrapUnthinkMiddleware(handler, routeType);
     }
