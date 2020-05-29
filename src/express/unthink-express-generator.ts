@@ -275,19 +275,13 @@ function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler
       return;
     }
 
-    if (!(err instanceof ViewResult)) {
+    if (!(err instanceof ViewResult) && !(err instanceof MiddlewareResult)) {
       req.log.error(buildUnthinkError(err), 'Unexpected error:');
       resp.status(500).send(unknownErrorMessage);
       return;
     }
 
-    const result = err as ViewResult;
-    if (!result.template) {
-      req.log.error('Template not defined.');
-      resp.status(500).send(unknownErrorMessage);
-      return;
-    }
-
+    const result = err as Result;
     try {
       const view = render(result, buildRouteContext(req, resp));
 
@@ -409,7 +403,7 @@ function middlewareHandler(
   resp: Response,
   next: NextFunction): void {
 
-  if (!result.continue || result.end) {
+  if (!result.continue && !result.end) {
     next(result);
   }
 
@@ -545,6 +539,12 @@ export class UnthinkExpressGenerator implements UnthinkGeneratorBackend {
     }
 
     const routeAndResourceLevelHandlers: RequestHandler[] = [];
+
+    // Inject route type into the middleware pipeline in case raw middleware needs it.
+    routeAndResourceLevelHandlers.push((_req, resp, next) => {
+      resp.locals.__routeType = resourceRouteDefinition.__routeType;
+      next();
+    });
 
     const processedResourceMiddleware = processMiddleware(resourceRouteDefinition.__routeType, resourceMiddleware);
     if (processedResourceMiddleware) {
