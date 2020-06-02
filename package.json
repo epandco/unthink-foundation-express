@@ -28,7 +28,7 @@
   "license": "MIT",
   "homepage": "https://github.com/epandco/unthink-foundation-express#readme",
   "devDependencies": {
-    "@epandco/unthink-foundation": "file:../unthink-foundation/epandco-unthink-foundation-1.0.1.tgz",
+    "@epandco/unthink-foundation": "^2.0.0",
     "@types/eslint": "^6.8.0",
     "@types/express": "^4.17.6",
     "@types/express-pino-logger": "^4.0.2",
@@ -38,7 +38,7 @@
     "typescript": "^3.8.3"
   },
   "peerDependencies": {
-    "@epandco/unthink-foundation": "^1.0.1",
+    "@epandco/unthink-foundation": "^2.0.0",
     "express": "^4.17.1"
   },
   "dependencies": {
