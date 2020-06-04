@@ -197,6 +197,12 @@ function buildRouteContext(req: Request, resp: Response): RouteContext {
   };
 }
 
+function mergeLocals(result: Result, resp: Response): void {
+  if (result.local) {
+    resp.locals = { ...resp.locals, ...result.local };
+  }
+}
+
 function buildUnthinkError(error: unknown): { unthinkHandlerError: unknown} {
   if (error instanceof Error) {
     return { unthinkHandlerError: error.stack };
@@ -230,10 +236,16 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
 
       const result = await resourceRouteHandler(ctx);
 
+      // Merging this always because errors may use locals and needs to be passed down
+      // to error handler.
+      mergeLocals(result, resp);
+
       if (result.status === 200 && result.template) {
         const body = render(
           result,
-          ctx
+          // Locals may have changed so rebuild context after merge locals above to ensure
+          // render function gets latest locals.
+          buildRouteContext(req, resp)
         );
 
         setHeaders(req, resp, result.headers);
@@ -304,6 +316,9 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
       const ctx: RouteContext = buildRouteContext(req, resp);
 
       const result = await resourceRouteHandler(ctx);
+
+      // merge locals to use downstream
+      mergeLocals(result, resp);
 
       if (result.status === 200 && result.value) {
         setHeaders(req, resp, result.headers);
@@ -403,6 +418,8 @@ function middlewareHandler(
   resp: Response,
   next: NextFunction): void {
 
+  mergeLocals(result, resp);
+
   if (!result.continue && !result.end) {
     next(result);
   }
@@ -415,11 +432,6 @@ function middlewareHandler(
   }
 
   if (result.continue) {
-    if (result.value) {
-      // merge locals so next function has the result of this func middleware.
-      resp.locals = { ...resp.locals, ...result.value as object };
-    }
-
     next();
   }
 }
