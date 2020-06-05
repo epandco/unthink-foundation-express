@@ -2,25 +2,41 @@ import * as pino from 'express-pino-logger';
 import { urlPathJoin } from '../utility/url-path-join';
 
 import {
+  Cookie,
+  DataResult,
+  MiddlewareResult,
+  MiddlewareType,
   ResourceDefinition,
   ResourceRouteDefinition,
   ResourceRouteHandlerBase,
+  Result,
   RouteContext,
   RouteMethod,
+  RouteType,
   UnthinkGeneratorBackend,
-  ViewResult,
-  DataResult, UnthinkViewRenderer, Cookie
+  UnthinkMiddleware,
+  UnthinkMiddlewareHandler,
+  UnthinkRawMiddleware,
+  UnthinkViewRenderer,
+  ViewResult
 } from '@epandco/unthink-foundation/lib/core';
+
 import {
   Application,
-  Router,
-  RequestHandler,
-  Request,
-  Response,
-  NextFunction,
+  CookieOptions,
+  ErrorRequestHandler,
   json,
-  ErrorRequestHandler, CookieOptions
+  NextFunction,
+  Request,
+  RequestHandler,
+  Response,
+  Router
 } from 'express';
+
+
+export interface ExpressMiddleware extends UnthinkRawMiddleware, RequestHandler {
+  __expressMiddleware: 'EXPRESS_MIDDLEWARE';
+}
 
 interface GeneratedRoute {
   prefix: string;
@@ -30,6 +46,10 @@ interface GeneratedRoute {
 interface GeneratedDefinition {
   path: string;
   router: Router;
+}
+
+interface MiddlewareEndHandler {
+  (result: MiddlewareResult, resp: Response): void;
 }
 
 function setHeaders(req: Request, resp: Response, headers?: Record<string, string>): void {
@@ -164,6 +184,25 @@ function convertCookies(req: Request): Cookie[] | undefined {
   return cookies;
 }
 
+function buildRouteContext(req: Request, resp: Response): RouteContext {
+  return {
+    query: req.query,
+    params: req.params,
+    body: req.body,
+    headers: convertHeaders(req),
+    cookies: convertCookies(req),
+    logger: req.log,
+    local: resp.locals,
+    path: req.path
+  };
+}
+
+function mergeLocals(result: Result, resp: Response): void {
+  if (result.local) {
+    resp.locals = { ...resp.locals, ...result.local };
+  }
+}
+
 function buildUnthinkError(error: unknown): { unthinkHandlerError: unknown} {
   if (error instanceof Error) {
     return { unthinkHandlerError: error.stack };
@@ -172,28 +211,41 @@ function buildUnthinkError(error: unknown): { unthinkHandlerError: unknown} {
   return { unthinkHandlerError: JSON.stringify(error) };
 }
 
+function redirect(result: Result, req: Request, resp: Response): boolean {
+  if ((result.status === 301 || result.status === 302) && result.redirectUrl) {
+    setHeaders(req, resp, result.headers);
+    setCookies(req, resp, result.cookies);
+    resp.redirect(result.status as number, result.redirectUrl as string);
+    return true;
+  }
+
+  if ((result.status === 301 || result.status === 302) && !result.redirectUrl) {
+    throw new Error(`When view result has a status of ${result.status} the redirect url MUST BE specified`);
+  }
+
+  return false;
+}
+
 function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewResult>, render: UnthinkViewRenderer): RequestHandler {
   return async (req, resp, next): Promise<void> => {
     resp.contentType('text/html');
 
     let error: unknown;
     try {
-      const ctx: RouteContext = {
-        query: req.query,
-        params: req.params,
-        headers: convertHeaders(req),
-        cookies: convertCookies(req),
-        logger: req.log,
-        local: resp.locals,
-        path: req.path
-      };
+      const ctx = buildRouteContext(req, resp);
 
       const result = await resourceRouteHandler(ctx);
 
+      // Merging this always because errors may use locals and needs to be passed down
+      // to error handler.
+      mergeLocals(result, resp);
+
       if (result.status === 200 && result.template) {
         const body = render(
-          result.template as string,
-          result.value
+          result,
+          // Locals may have changed so rebuild context after merge locals above to ensure
+          // render function gets latest locals.
+          buildRouteContext(req, resp)
         );
 
         setHeaders(req, resp, result.headers);
@@ -204,16 +256,11 @@ function buildViewHandler(resourceRouteHandler: ResourceRouteHandlerBase<ViewRes
         return;
       }
 
-      if ((result.status === 301 || result.status === 302) && result.redirectUrl) {
-        setHeaders(req, resp, result.headers);
-        setCookies(req, resp, result.cookies);
-        resp.redirect(result.status as number, result.redirectUrl as string);
+      if (redirect(result, req, resp)) {
         return;
       }
 
-      if ((result.status === 301 || result.status === 302) && !result.redirectUrl) {
-        error = new Error(`When view result has a status of ${result.status} the redirect url MUST BE specified`);
-      } if (result.status === 200 && !result.template) {
+      if (result.status === 200 && !result.template) {
         error = new Error('When view result has a status of 200 the template MUST BE set!');
       } else {
         error = result;
@@ -240,21 +287,15 @@ function buildViewErrorHandler(render: UnthinkViewRenderer): ErrorRequestHandler
       return;
     }
 
-    if (!(err instanceof ViewResult)) {
+    if (!(err instanceof ViewResult) && !(err instanceof MiddlewareResult)) {
       req.log.error(buildUnthinkError(err), 'Unexpected error:');
       resp.status(500).send(unknownErrorMessage);
       return;
     }
 
-    const result = err as ViewResult;
-    if (!result.template) {
-      req.log.error('Template not defined.');
-      resp.status(500).send(unknownErrorMessage);
-      return;
-    }
-
+    const result = err as Result;
     try {
-      const view = render(result.template as string, result.value);
+      const view = render(result, buildRouteContext(req, resp));
 
       setHeaders(req, resp, result.headers);
       setCookies(req, resp, result.cookies);
@@ -272,18 +313,12 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
   return async (req, resp, next): Promise<void> => {
     let error: unknown;
     try {
-      const ctx: RouteContext = {
-        query: req.query,
-        params: req.params,
-        body: req.body,
-        headers: convertHeaders(req),
-        cookies: convertCookies(req),
-        logger: req.log,
-        local: resp.locals,
-        path: req.path
-      };
+      const ctx: RouteContext = buildRouteContext(req, resp);
 
       const result = await resourceRouteHandler(ctx);
+
+      // merge locals to use downstream
+      mergeLocals(result, resp);
 
       if (result.status === 200 && result.value) {
         setHeaders(req, resp, result.headers);
@@ -296,6 +331,10 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
         setHeaders(req, resp, result.headers);
         setCookies(req, resp, result.cookies);
         resp.status(204).end();
+        return;
+      }
+
+      if (redirect(result, req, resp)) {
         return;
       }
 
@@ -327,13 +366,13 @@ async function dataErrorHandler(err: unknown, req: Request, resp: Response, _nex
     return;
   }
 
-  if (!(err instanceof DataResult)) {
+  if (!(err instanceof DataResult) && !(err instanceof MiddlewareResult)) {
     req.log.error(buildUnthinkError(err), 'Unexpected error');
     resp.status(500).json(unknownError);
     return;
   }
 
-  const result = err as DataResult;
+  const result = err as Result;
   if (result.status !== 400 && result.status !== 401 && result.status !== 404) {
     req.log.error(`The status ${result.status} is not supported by this framework for data results.`);
     resp.status(500).json(unknownError);
@@ -357,7 +396,124 @@ async function dataErrorHandler(err: unknown, req: Request, resp: Response, _nex
   resp.status(result.status).json(result.value);
 }
 
-export class UnthinkExpressGenerator implements UnthinkGeneratorBackend<RequestHandler> {
+function dataEndHandler(
+  result: MiddlewareResult,
+  resp: Response): void {
+
+  resp.status(result.status).json(result.value);
+}
+
+function viewEndHandler(
+  result: MiddlewareResult,
+  resp: Response): void {
+
+  resp.contentType('text/html');
+  resp.status(result.status).send(result.value);
+}
+
+function middlewareHandler(
+  result: MiddlewareResult,
+  endHandler: MiddlewareEndHandler,
+  req: Request,
+  resp: Response,
+  next: NextFunction): void {
+
+  mergeLocals(result, resp);
+
+  if (!result.continue && !result.end) {
+    next(result);
+  }
+
+  setHeaders(req, resp, result.headers);
+  setCookies(req, resp, result.cookies);
+
+  if (result.end) {
+    return endHandler(result, resp);
+  }
+
+  if (result.continue) {
+    next();
+  }
+}
+
+async function asyncMiddlewareHandler(
+  asyncResult: Promise<MiddlewareResult>,
+  callback: (asyncResult: MiddlewareResult) => void): Promise<void> {
+  const result = await asyncResult;
+
+  return callback(result);
+}
+
+function buildMiddlewareHandler(
+  handler: UnthinkMiddlewareHandler,
+  endHandler: MiddlewareEndHandler): RequestHandler {
+  return (req, res, next): void | Promise<void> => {
+    const ctx = buildRouteContext(req, res);
+
+    try {
+      const result = handler(ctx);
+
+      if (result instanceof Promise) {
+        return asyncMiddlewareHandler(result, (asyncResult) => {
+          middlewareHandler(asyncResult, endHandler, req, res, next, );
+        });
+      }
+
+      middlewareHandler(result, endHandler, req, res, next);
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+function wrapUnthinkMiddleware(handler: UnthinkMiddleware, routeType: RouteType): RequestHandler {
+  if (handler.__middlewareType === MiddlewareType.RAW) {
+    throw new Error('No need to wrap raw middleware');
+  }
+
+  switch (routeType) {
+    case RouteType.DATA:
+      return buildMiddlewareHandler(handler, dataEndHandler);
+      break;
+    case RouteType.VIEW:
+      return buildMiddlewareHandler(handler, viewEndHandler);
+      break;
+    default:
+      throw new Error(`Unsupported route type ${routeType}`);
+  }
+}
+
+function processMiddleware(routeType: RouteType, middleware?: UnthinkMiddleware[]): RequestHandler[] | undefined {
+  if (!middleware) {
+    return undefined;
+  }
+
+  let filtered: UnthinkMiddleware[];
+
+  // Only include the relevant middleware for the route type
+  // It is not an error for it to be in the list especially from the resource level we just safely ignore it
+  if (routeType === RouteType.DATA) {
+    filtered = middleware.filter(p => p.__middlewareType !== MiddlewareType.VIEW);
+  } else if (routeType === RouteType.VIEW) {
+    filtered = middleware.filter(p => p.__middlewareType !== MiddlewareType.DATA);
+  } else {
+    throw new Error(`Route type ${routeType} is not supported`);
+  }
+
+  return filtered.map((handler) => {
+    if (handler.__middlewareType !== MiddlewareType.RAW) {
+      return wrapUnthinkMiddleware(handler, routeType);
+    }
+
+    if ('__expressMiddleware' in handler && (handler as ExpressMiddleware).__expressMiddleware === 'EXPRESS_MIDDLEWARE') {
+      return handler as RequestHandler;
+    }
+
+    throw new Error(`Unsupported middleware ${JSON.stringify(handler)}`);
+  });
+}
+
+export class UnthinkExpressGenerator implements UnthinkGeneratorBackend {
   private readonly app: Application;
   private readonly viewRenderer: UnthinkViewRenderer;
   private readonly logLevel: string;
@@ -368,7 +524,7 @@ export class UnthinkExpressGenerator implements UnthinkGeneratorBackend<RequestH
     this.logLevel = logLevel;
   }
 
-  generate(resourceDefinitions: ResourceDefinition<RequestHandler>[]): void {
+  generate(resourceDefinitions: ResourceDefinition<UnthinkMiddleware>[]): void {
     const generatedDefinitions = resourceDefinitions.flatMap(p => this.generateDefinition(p));
 
     this.app.use(json());
@@ -381,22 +537,38 @@ export class UnthinkExpressGenerator implements UnthinkGeneratorBackend<RequestH
     }
   }
 
-  generateRoute(resourceRouteDefinition: ResourceRouteDefinition<RequestHandler>): GeneratedRoute {
+  generateRoute(resourceRouteDefinition: ResourceRouteDefinition<UnthinkMiddleware>, resourceMiddleware?: UnthinkMiddleware[]): GeneratedRoute {
     const router = Router();
     const route = router.route(resourceRouteDefinition.path);
 
     switch (resourceRouteDefinition.__routeType) {
-    case 'DATA':
-      router.use(dataErrorHandler);
-      break;
-    case 'VIEW':
-      router.use(buildViewErrorHandler(this.viewRenderer));
-      break;
+      case 'DATA':
+        router.use(dataErrorHandler);
+        break;
+      case 'VIEW':
+        router.use(buildViewErrorHandler(this.viewRenderer));
+        break;
     }
 
-    if (resourceRouteDefinition.middleware && resourceRouteDefinition.middleware.length > 0) {
-      route.all(...resourceRouteDefinition.middleware);
+    const routeAndResourceLevelHandlers: RequestHandler[] = [];
+
+    // Inject route type into the middleware pipeline in case raw middleware needs it.
+    routeAndResourceLevelHandlers.push((_req, resp, next) => {
+      resp.locals.__routeType = resourceRouteDefinition.__routeType;
+      next();
+    });
+
+    const processedResourceMiddleware = processMiddleware(resourceRouteDefinition.__routeType, resourceMiddleware);
+    if (processedResourceMiddleware) {
+      routeAndResourceLevelHandlers.push(...processedResourceMiddleware);
     }
+
+    const processedRouteMiddleware = processMiddleware(resourceRouteDefinition.__routeType, resourceRouteDefinition.middleware);
+    if (processedRouteMiddleware) {
+      routeAndResourceLevelHandlers.push(...processedRouteMiddleware);
+    }
+
+    route.all(routeAndResourceLevelHandlers);
 
     for (const method in resourceRouteDefinition.methods) {
       const resourceHandlerObj = resourceRouteDefinition.methods[method as RouteMethod];
@@ -410,25 +582,33 @@ export class UnthinkExpressGenerator implements UnthinkGeneratorBackend<RequestH
       const handlers: RequestHandler[] = [];
       if ('handler' in resourceHandlerObj) {
         resourceHandler = resourceHandlerObj.handler;
-        handlers.push(...resourceHandlerObj.middleware);
+
+        const processedHandlerMiddleware = processMiddleware(
+          resourceRouteDefinition.__routeType,
+          resourceHandlerObj.middleware
+        );
+
+        if (processedHandlerMiddleware) {
+          handlers.push(...processedHandlerMiddleware);
+        }
       } else {
         resourceHandler = resourceHandlerObj;
       }
 
       switch (resourceRouteDefinition.__routeType) {
-      case 'DATA':
-        handlers.push(
-          buildDataHandler(resourceHandler as ResourceRouteHandlerBase<DataResult>)
-        );
-        break;
-      case 'VIEW':
-        handlers.push(
-          buildViewHandler(
-              resourceHandler as ResourceRouteHandlerBase<ViewResult>,
-              this.viewRenderer
-          )
-        );
-        break;
+        case 'DATA':
+          handlers.push(
+            buildDataHandler(resourceHandler as ResourceRouteHandlerBase<DataResult>)
+          );
+          break;
+        case 'VIEW':
+          handlers.push(
+            buildViewHandler(
+                resourceHandler as ResourceRouteHandlerBase<ViewResult>,
+                this.viewRenderer
+            )
+          );
+          break;
       }
 
       route[method as RouteMethod](...handlers);
@@ -440,11 +620,11 @@ export class UnthinkExpressGenerator implements UnthinkGeneratorBackend<RequestH
     };
   }
 
-  generateDefinition(resourceDefinition: ResourceDefinition<RequestHandler>): GeneratedDefinition[] {
+  generateDefinition(resourceDefinition: ResourceDefinition<UnthinkMiddleware>): GeneratedDefinition[] {
     const mapPrefixedRoutes = new Map<string, GeneratedDefinition>();
 
     for (const routeDef of resourceDefinition.routes) {
-      const { prefix, router } = this.generateRoute(routeDef);
+      const { prefix, router } = this.generateRoute(routeDef, resourceDefinition.middleware);
 
       if (!mapPrefixedRoutes.has(prefix)) {
         let basePath = resourceDefinition.basePath;
@@ -459,10 +639,6 @@ export class UnthinkExpressGenerator implements UnthinkGeneratorBackend<RequestH
           path: urlPath,
           router: Router()
         };
-
-        if (resourceDefinition.middleware && resourceDefinition.middleware.length > 0) {
-          generatedDefinition.router.use(...resourceDefinition.middleware);
-        }
 
         mapPrefixedRoutes.set(prefix, generatedDefinition);
       }
