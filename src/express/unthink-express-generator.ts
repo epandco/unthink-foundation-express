@@ -634,7 +634,7 @@ export class UnthinkExpressGenerator implements UnthinkGeneratorBackend {
           basePath = '/';
         }
 
-        const urlPath = urlPathJoin([prefix, basePath]);
+        const urlPath = urlPathJoin([prefix ? prefix : '/', basePath]);
         const generatedDefinition: GeneratedDefinition = {
           path: urlPath,
           router: Router()
