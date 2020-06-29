@@ -340,7 +340,7 @@ function buildDataHandler(resourceRouteHandler: ResourceRouteHandlerBase<DataRes
 
       if (result.status === 200 && !result.value) {
         error = new Error('The value MUST be set for data results when the status is 200.');
-      } else if (result.status === 201 && result.value) {
+      } else if (result.status === 204 && result.value) {
         error = new Error('The value SHOULD NOT be set for data results when the status is 204');
       } else {
         error = result;
