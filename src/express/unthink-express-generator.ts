@@ -420,6 +420,10 @@ function middlewareHandler(
 
   mergeLocals(result, resp);
 
+  if (redirect(result, req, resp)) {
+    return;
+  }
+
   if (!result.continue && !result.end) {
     next(result);
   }
