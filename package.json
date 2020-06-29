@@ -1,6 +1,6 @@
 {
   "name": "@epandco/unthink-foundation-express",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Express generator for the unthink-foundation framework",
   "scripts": {
     "prepublishOnly": "npm run build",
